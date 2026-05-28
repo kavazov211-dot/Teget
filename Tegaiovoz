@@ -1,90 +1,286 @@
 import telebot
 from telebot import types
-import edge_tts
-import asyncio
-import os
+import sqlite3
+from datetime import datetime
 
-TOKEN = "8435803353:AAEp9z8amY-M69uOk76DKS0ztd1Y-YozFN0"
-
+# Bot tokeningizni shu yerga yozing
+TOKEN = "8067221073:AAGD-R2_4azk8MEdpVTqVUrtHrrgv6P2alM"
 bot = telebot.TeleBot(TOKEN)
 
-user_lang = {}
+# ---- MA'LUMOTLAR BAZASI BILAN ISHLASH ----
+def init_db():
+    conn = sqlite3.connect("poetry_bot.db")
+    cursor = conn.cursor()
+    # Profil jadvali
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        author_name TEXT,
+        password TEXT
+    )
+    """)
+    # Sherlar jadvali
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS poems (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        profile_id INTEGER,
+        poem_title TEXT,
+        poem_text TEXT,
+        created_at TEXT,
+        FOREIGN KEY (profile_id) REFERENCES profiles (id)
+    )
+    """)
+    
+    # 🛠 AGAR ESKI BAZA BO'LSA, MAJBURIY RAVISHDA created_at USTUNINI QO'SHISH
+    try:
+        cursor.execute("ALTER TABLE poems ADD COLUMN created_at TEXT")
+    except sqlite3.OperationalError:
+        # Ustun allaqachon bo'lsa, xatolik bermasdan o'tib ketadi
+        pass
+        
+    conn.commit()
+    conn.close()
 
+init_db()
+
+# Foydalanuvchilarning bosqichlarini saqlash
+user_steps = {}
+
+# ---- ASOSIY MENU ----
+def main_menu():
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    btn1 = types.InlineKeyboardButton("➕ Yangi profil ochish", callback_data="create_profile")
+    btn2 = types.InlineKeyboardButton("📝 Mavjud profilga she'r qo'shish", callback_data="add_poem_start")
+    btn3 = types.InlineKeyboardButton("📚 Shoirlar profillari", callback_data="view_profiles")
+    markup.add(btn1, btn2, btn3)
+    return markup
+
+# ---- /START BUYRUG'I ----
 @bot.message_handler(commands=['start'])
-def start(message):
-
-    # inline knopkalar
-    markup = types.InlineKeyboardMarkup()
-
-    uz_btn = types.InlineKeyboardButton(
-        "🇺🇿 O'zbekcha",
-        callback_data="uz"
-    )
-
-    ru_btn = types.InlineKeyboardButton(
-        "🇷🇺 Русский",
-        callback_data="ru"
-    )
-
-    markup.add(uz_btn, ru_btn)
-
+def cmd_start(message):
     bot.send_message(
         message.chat.id,
-        "Tilni tanlang 👇",
-        reply_markup=markup
+        f"Assalomu alaykum, {message.from_user.full_name}!\n"
+        "Sheriy botimizga xush kelibsiz. Quyidagi bo'limlardan birini tanlang:",
+        reply_markup=main_menu()
     )
 
-# knopka bosilganda
+# ---- INLINE TUGMALARNI ESHITISH ----
 @bot.callback_query_handler(func=lambda call: True)
-def callback(call):
+def callback_listener(call):
+    chat_id = call.message.chat.id
+    
+    # PROFIL YARATISH
+    if call.data == "create_profile":
+        bot.send_message(chat_id, "Iltimos, shoir (profil) nomini kiriting:")
+        user_steps[chat_id] = {"step": "get_name"}
+        bot.answer_callback_query(call.id)
+        
+    # YANGI SHE'R QO'SHISH BOSHLANISHI
+    elif call.data == "add_poem_start":
+        conn = sqlite3.connect("poetry_bot.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, author_name FROM profiles")
+        profiles = cursor.fetchall()
+        conn.close()
+        
+        if not profiles:
+            bot.send_message(chat_id, "Hozircha hech qanday profil ochilmagan. Avval profil oching.", reply_markup=main_menu())
+            bot.answer_callback_query(call.id)
+            return
+            
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for prof_id, name in profiles:
+            markup.add(types.InlineKeyboardButton(f"✍️ {name}", callback_data=f"addto_{prof_id}"))
+        markup.add(types.InlineKeyboardButton("⬅️ Ortga", callback_data="back_to_menu"))
+        
+        bot.edit_message_text("Qaysi profilga she'r qo'shmoqchisiz? Tanlang:", chat_id, call.message.message_id, reply_markup=markup)
+        bot.answer_callback_query(call.id)
 
-    if call.data == "uz":
+    # SHOIR TANLANGANDAN KEYIN PAROL SO'RASH
+    elif call.data.startswith("addto_"):
+        profile_id = int(call.data.split("_")[1])
+        user_steps[chat_id] = {"step": "check_password", "profile_id": profile_id}
+        bot.send_message(chat_id, "Ushbu profil parolini kiriting:")
+        bot.answer_callback_query(call.id)
+        
+    # PROFILLARI KO'RISH
+    elif call.data == "view_profiles":
+        conn = sqlite3.connect("poetry_bot.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, author_name FROM profiles")
+        profiles = cursor.fetchall()
+        conn.close()
+        
+        if not profiles:
+            bot.send_message(chat_id, "Hozircha hech qanday profil ochilmagan.", reply_markup=main_menu())
+            bot.answer_callback_query(call.id)
+            return
+            
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for prof_id, name in profiles:
+            markup.add(types.InlineKeyboardButton(f"✍️ {name}", callback_data=f"prof_{prof_id}"))
+        markup.add(types.InlineKeyboardButton("⬅️ Ortga", callback_data="back_to_menu"))
+        
+        bot.edit_message_text("Ochilgan shoirlar profillari ro'yxati:", chat_id, call.message.message_id, reply_markup=markup)
+        bot.answer_callback_query(call.id)
+        
+    # SHOIRNING SHE'RLARI RO'YXATI
+    elif call.data.startswith("prof_"):
+        profile_id = int(call.data.split("_")[1])
+        
+        conn = sqlite3.connect("poetry_bot.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT author_name FROM profiles WHERE id = ?", (profile_id,))
+        author_name = cursor.fetchone()[0]
+        cursor.execute("SELECT id, poem_title FROM poems WHERE profile_id = ?", (profile_id,))
+        poems = cursor.fetchall()
+        conn.close()
+        
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for poem_id, title in poems:
+            markup.add(types.InlineKeyboardButton(f"📜 {title}", callback_data=f"poem_{poem_id}"))
+        markup.add(types.InlineKeyboardButton("⬅️ Shoirlarga qaytish", callback_data="view_profiles"))
+        
+        bot.edit_message_text(f"✨ *{author_name}* ijodiga mansub she'rlar:", chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        bot.answer_callback_query(call.id)
+        
+    # SHE'RNI KO'RSATISH
+    elif call.data.startswith("poem_"):
+        poem_id = int(call.data.split("_")[1])
+        
+        conn = sqlite3.connect("poetry_bot.db")
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT poems.poem_title, poems.poem_text, poems.created_at, profiles.author_name, profiles.id
+            FROM poems 
+            JOIN profiles ON poems.profile_id = profiles.id 
+            WHERE poems.id = ?
+        """, (poem_id,))
+        res = cursor.fetchone()
+        conn.close()
+        
+        if res:
+            title, text, created_at, author, prof_id = res
+            # Agar yaratilgan vaqt bazada yo'q bo'lsa (eski she'rlar bo'lsa) "Noma'lum" deb chiqadi
+            time_str = created_at if created_at else "Noma'lum"
+            
+            response_text = (
+                f"📌 *Mavzu:* {title}\n"
+                f"✍️ *Muallif:* {author}\n"
+                f"📅 *Yuklangan vaqti:* {time_str}\n"
+                f"━━━━━━━━━━━━━━━\n\n"
+                f"{text}\n\n"
+                f"━━━━━━━━━━━━━━━\n"
+                f"ℹ️ _Ushbu she'r bot foydalanuvchisi tomonidan yuklangan._"
+            )
+            markup = types.InlineKeyboardMarkup()
+            markup.add(types.InlineKeyboardButton("⬅️ She'rlar ro'yxatiga qaytish", callback_data=f"prof_{prof_id}"))
+            bot.edit_message_text(response_text, chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        bot.answer_callback_query(call.id)
 
-        user_lang[call.message.chat.id] = "uz"
+    elif call.data == "back_to_menu":
+        bot.edit_message_text("Asosiy menu:", chat_id, call.message.message_id, reply_markup=main_menu())
+        bot.answer_callback_query(call.id)
 
-        bot.edit_message_text(
-            "✅ O'zbekcha tanlandi\n\nMatn txt yuboring 🎤",
-            call.message.chat.id,
-            call.message.message_id
-        )
+# ---- MATNLARNI QABUL QILISH ----
+@bot.message_handler(func=lambda message: message.chat.id in user_steps)
+def handle_steps(message):
+    chat_id = message.chat.id
+    step_data = user_steps[chat_id]
+    
+    # --- PROFIL OCHISH BOSQICHLARI ---
+    if step_data["step"] == "get_name":
+        user_steps[chat_id]["author_name"] = message.text
+        user_steps[chat_id]["step"] = "get_password"
+        bot.send_message(chat_id, "Profil uchun parol o'ylab toping va kiriting:")
+        
+    elif step_data["step"] == "get_password":
+        user_steps[chat_id]["password"] = message.text
+        user_steps[chat_id]["step"] = "get_poem_title"
+        bot.send_message(chat_id, "Ajoyib! Endi ilk she'ringizning **nomini (sarlavhasini)** kiriting:")
+        
+    elif step_data["step"] == "get_poem_title":
+        user_steps[chat_id]["poem_title"] = message.text
+        user_steps[chat_id]["step"] = "get_poem_text"
+        bot.send_message(chat_id, "Endi esa she'rning **matnini (o'zini)** yuboring:")
+        
+    elif step_data["step"] == "get_poem_text":
+        poem_text = message.text
+        author_name = step_data["author_name"]
+        password = step_data["password"]
+        poem_title = step_data["poem_title"]
+        
+        now = datetime.now().strftime("%d.%m.%Y %H:%M")
+        
+        conn = sqlite3.connect("poetry_bot.db")
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO profiles (user_id, author_name, password) VALUES (?, ?, ?)", (message.from_user.id, author_name, password))
+        profile_id = cursor.lastrowid
+        cursor.execute("INSERT INTO poems (profile_id, poem_title, poem_text, created_at) VALUES (?, ?, ?, ?)", (profile_id, poem_title, poem_text, now))
+        conn.commit()
+        conn.close()
+        
+        del user_steps[chat_id]
+        bot.send_message(chat_id, f"🎉 Tabriklaymiz! *{author_name}* profili ochildi va birinchi she'r joylandi!", reply_markup=main_menu(), parse_mode="Markdown")
 
-    elif call.data == "ru":
+    # --- MAVJUD PROFILGA SHE'R QO'SHISH BOSQICHLARI ---
+    elif step_data["step"] == "check_password":
+        input_pass = message.text
+        prof_id = step_data["profile_id"]
+        
+        conn = sqlite3.connect("poetry_bot.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT password, author_name FROM profiles WHERE id = ?", (prof_id,))
+        res = cursor.fetchone()
+        conn.close()
+        
+        if res and res[0] == input_pass:
+            user_steps[chat_id]["author_name"] = res[1]
+            user_steps[chat_id]["step"] = "add_poem_title"
+            bot.send_message(chat_id, "🔒 Parol to'g'ri! Endi yangi she'ringizning **nomini (sarlavhasini)** kiriting:")
+        else:
+            del user_steps[chat_id]
+            bot.send_message(chat_id, "❌ Parol noto'g'ri! Xavfsizlik yuzasidan jarayon bekor qilindi.", reply_markup=main_menu())
 
-        user_lang[call.message.chat.id] = "ru"
+    elif step_data["step"] == "add_poem_title":
+        user_steps[chat_id]["new_poem_title"] = message.text
+        user_steps[chat_id]["step"] = "add_poem_text"
+        bot.send_message(chat_id, "Endi she'rning **matnini (o'zini)** yuboring:")
 
-        bot.edit_message_text(
-            "✅ Русский выбран\n\nОтправьте текст 🎤",
-            call.message.chat.id,
-            call.message.message_id
-        )
+    elif step_data["step"] == "add_poem_text":
+        new_text = message.text
+        title = step_data["new_poem_title"]
+        prof_id = step_data["profile_id"]
+        author = step_data["author_name"]
+        
+        now = datetime.now().strftime("%d.%m.%Y %H:%M")
+        
+        conn = sqlite3.connect("poetry_bot.db")
+        cursor = conn.cursor()
+        
+        # 🔍 TEKSHIRUV: Aynan shu shoirda HAM NOMI, HAM MATNI bir xil bo'lgan she'r bormi?
+        cursor.execute("""
+            SELECT id FROM poems 
+            WHERE profile_id = ? AND poem_title = ? AND poem_text = ?
+        """, (prof_id, title, new_text))
+        
+        existing_poem = cursor.fetchone()
+        
+        if existing_poem:
+            # Bir xil bo'lsa bazaga qayta yozilmaydi (hech nima bo'lmaydi)
+            conn.close()
+        else:
+            # Mutlaqo yangi bo'lsa, vaqt bilan birga qo'shiladi
+            cursor.execute("INSERT INTO poems (profile_id, poem_title, poem_text, created_at) VALUES (?, ?, ?, ?)", (prof_id, title, new_text, now))
+            conn.commit()
+            conn.close()
+            
+        del user_steps[chat_id]
+        bot.send_message(chat_id, f"✅ *{author}* profiliga yangi \"{title}\" nomli she'r muvaffaqiyatli qo'shildi!", reply_markup=main_menu(), parse_mode="Markdown")
 
-# Text -> Voice
-@bot.message_handler(func=lambda m: True)
-def voice(message):
-
-    text = message.text
-    filename = "voice.mp3"
-
-    lang = user_lang.get(message.chat.id, "uz")
-
-    if lang == "uz":
-        voice_name = "uz-UZ-MadinaNeural"
-    else:
-        voice_name = "ru-RU-SvetlanaNeural"
-
-    async def generate():
-        communicate = edge_tts.Communicate(
-            text,
-            voice_name
-        )
-        await communicate.save(filename)
-
-    asyncio.run(generate())
-
-    with open(filename, "rb") as audio:
-        bot.send_voice(message.chat.id, audio)
-
-    os.remove(filename)
-
-print("Bot ishladi...")
-bot.infinity_polling()
+# ---- BOTNI ISHGA TUSHIRISH ----
+if __name__ == "__main__":
+    print("Bot muvaffaqiyatli ishga tushdi...")
+    bot.infinity_polling()
