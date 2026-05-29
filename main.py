@@ -2,6 +2,7 @@ import telebot
 from telebot import types
 import sqlite3
 from datetime import datetime
+import pytz  # <--- Vaqt zonasini to'g'irlash uchun kutubxona
 
 # Bot tokeningizni shu yerga yozing
 TOKEN = "8067221073:AAGD-R2_4azk8MEdpVTqVUrtHrrgv6P2alM"
@@ -247,7 +248,9 @@ def handle_steps(message):
         password = step_data["password"]
         poem_title = step_data["poem_title"]
         
-        now = datetime.now().strftime("%d.%m.%Y %H:%M")
+        # 🟢 Toshkent vaqt zonasi bo'yicha vaqtni olish
+        tashkent_tz = pytz.timezone('Asia/Tashkent')
+        now = datetime.now(tashkent_tz).strftime("%d.%m.%Y %H:%M")
         
         conn = sqlite3.connect("poetry_bot.db")
         cursor = conn.cursor()
@@ -290,7 +293,9 @@ def handle_steps(message):
         prof_id = step_data["profile_id"]
         author = step_data["author_name"]
         
-        now = datetime.now().strftime("%d.%m.%Y %H:%M")
+        # 🟢 Toshkent vaqt zonasi bo'yicha vaqtni olish
+        tashkent_tz = pytz.timezone('Asia/Tashkent')
+        now = datetime.now(tashkent_tz).strftime("%d.%m.%Y %H:%M")
         
         conn = sqlite3.connect("poetry_bot.db")
         cursor = conn.cursor()
@@ -319,14 +324,12 @@ def handle_steps(message):
         
         conn = sqlite3.connect("poetry_bot.db")
         cursor = conn.cursor()
-        # Cascade o'chirish ishlashi uchun yana pragma yoqiladi
         cursor.execute("PRAGMA foreign_keys = ON;")
         cursor.execute("SELECT password, author_name FROM profiles WHERE id = ?", (prof_id,))
         res = cursor.fetchone()
         
         if res and res[0] == input_pass:
             author_name = res[1]
-            # Profilni o'chiramiz (she'rlar avtomatik o'chadi)
             cursor.execute("DELETE FROM profiles WHERE id = ?", (prof_id,))
             conn.commit()
             conn.close()
