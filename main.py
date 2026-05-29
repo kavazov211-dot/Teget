@@ -11,6 +11,9 @@ bot = telebot.TeleBot(TOKEN)
 def init_db():
     conn = sqlite3.connect("poetry_bot.db")
     cursor = conn.cursor()
+    # SQLite da ON DELETE CASCADE ishlashi uchun PRAGMA ni yoqamiz
+    cursor.execute("PRAGMA foreign_keys = ON;")
+    
     # Profil jadvali
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS profiles (
@@ -20,7 +23,7 @@ def init_db():
         password TEXT
     )
     """)
-    # Sherlar jadvali
+    # Sherlar jadvali (ON DELETE CASCADE qo'shildi)
     cursor.execute("""
     CREATE TABLE IF NOT EXISTS poems (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,7 +31,7 @@ def init_db():
         poem_title TEXT,
         poem_text TEXT,
         created_at TEXT,
-        FOREIGN KEY (profile_id) REFERENCES profiles (id)
+        FOREIGN KEY (profile_id) REFERENCES profiles (id) ON DELETE CASCADE
     )
     """)
     
@@ -36,7 +39,6 @@ def init_db():
     try:
         cursor.execute("ALTER TABLE poems ADD COLUMN created_at TEXT")
     except sqlite3.OperationalError:
-        # Ustun allaqachon bo'lsa, xatolik bermasdan o'tib ketadi
         pass
         
     conn.commit()
@@ -53,7 +55,8 @@ def main_menu():
     btn1 = types.InlineKeyboardButton("➕ Yangi profil ochish", callback_data="create_profile")
     btn2 = types.InlineKeyboardButton("📝 Mavjud profilga she'r qo'shish", callback_data="add_poem_start")
     btn3 = types.InlineKeyboardButton("📚 Shoirlar profillari", callback_data="view_profiles")
-    markup.add(btn1, btn2, btn3)
+    btn4 = types.InlineKeyboardButton("❌ Profilni o'chirish", callback_data="delete_profile_start")
+    markup.add(btn1, btn2, btn3, btn4)
     return markup
 
 # ---- /START BUYRUG'I ----
@@ -98,7 +101,7 @@ def callback_listener(call):
         bot.edit_message_text("Qaysi profilga she'r qo'shmoqchisiz? Tanlang:", chat_id, call.message.message_id, reply_markup=markup)
         bot.answer_callback_query(call.id)
 
-    # SHOIR TANLANGANDAN KEYIN PAROL SO'RASH
+    # SHOIR TANLANGANDAN KEYIN PAROL SO'RASH (SHE'R QO'SHISH UCHUN)
     elif call.data.startswith("addto_"):
         profile_id = int(call.data.split("_")[1])
         user_steps[chat_id] = {"step": "check_password", "profile_id": profile_id}
@@ -133,7 +136,12 @@ def callback_listener(call):
         conn = sqlite3.connect("poetry_bot.db")
         cursor = conn.cursor()
         cursor.execute("SELECT author_name FROM profiles WHERE id = ?", (profile_id,))
-        author_name = cursor.fetchone()[0]
+        author_res = cursor.fetchone()
+        if not author_res:
+            bot.send_message(chat_id, "Profil topilmadi.", reply_markup=main_menu())
+            conn.close()
+            return
+        author_name = author_res[0]
         cursor.execute("SELECT id, poem_title FROM poems WHERE profile_id = ?", (profile_id,))
         poems = cursor.fetchall()
         conn.close()
@@ -163,7 +171,6 @@ def callback_listener(call):
         
         if res:
             title, text, created_at, author, prof_id = res
-            # Agar yaratilgan vaqt bazada yo'q bo'lsa (eski she'rlar bo'lsa) "Noma'lum" deb chiqadi
             time_str = created_at if created_at else "Noma'lum"
             
             response_text = (
@@ -178,6 +185,34 @@ def callback_listener(call):
             markup = types.InlineKeyboardMarkup()
             markup.add(types.InlineKeyboardButton("⬅️ She'rlar ro'yxatiga qaytish", callback_data=f"prof_{prof_id}"))
             bot.edit_message_text(response_text, chat_id, call.message.message_id, reply_markup=markup, parse_mode="Markdown")
+        bot.answer_callback_query(call.id)
+
+    # PROFIL O'CHIRISH BOSHLANISHI
+    elif call.data == "delete_profile_start":
+        conn = sqlite3.connect("poetry_bot.db")
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, author_name FROM profiles")
+        profiles = cursor.fetchall()
+        conn.close()
+        
+        if not profiles:
+            bot.send_message(chat_id, "Hozircha o'chirish uchun hech qanday profil yo'q.", reply_markup=main_menu())
+            bot.answer_callback_query(call.id)
+            return
+            
+        markup = types.InlineKeyboardMarkup(row_width=1)
+        for prof_id, name in profiles:
+            markup.add(types.InlineKeyboardButton(f"🗑 {name}", callback_data=f"delto_{prof_id}"))
+        markup.add(types.InlineKeyboardButton("⬅️ Ortga", callback_data="back_to_menu"))
+        
+        bot.edit_message_text("Qaysi profilni o'chirmoqchisiz? Tanlang:", chat_id, call.message.message_id, reply_markup=markup)
+        bot.answer_callback_query(call.id)
+
+    # O'CHIRILADIGAN PROFIL TANLANGANDAN KEYIN PAROL SO'RASH
+    elif call.data.startswith("delto_"):
+        profile_id = int(call.data.split("_")[1])
+        user_steps[chat_id] = {"step": "delete_check_password", "profile_id": profile_id}
+        bot.send_message(chat_id, "⚠️ Diqqat! Ushbu profilni butunlay o'chirish uchun parolini kiriting:")
         bot.answer_callback_query(call.id)
 
     elif call.data == "back_to_menu":
@@ -260,7 +295,6 @@ def handle_steps(message):
         conn = sqlite3.connect("poetry_bot.db")
         cursor = conn.cursor()
         
-        # 🔍 TEKSHIRUV: Aynan shu shoirda HAM NOMI, HAM MATNI bir xil bo'lgan she'r bormi?
         cursor.execute("""
             SELECT id FROM poems 
             WHERE profile_id = ? AND poem_title = ? AND poem_text = ?
@@ -269,16 +303,40 @@ def handle_steps(message):
         existing_poem = cursor.fetchone()
         
         if existing_poem:
-            # Bir xil bo'lsa bazaga qayta yozilmaydi (hech nima bo'lmaydi)
             conn.close()
         else:
-            # Mutlaqo yangi bo'lsa, vaqt bilan birga qo'shiladi
             cursor.execute("INSERT INTO poems (profile_id, poem_title, poem_text, created_at) VALUES (?, ?, ?, ?)", (prof_id, title, new_text, now))
             conn.commit()
             conn.close()
             
         del user_steps[chat_id]
         bot.send_message(chat_id, f"✅ *{author}* profiliga yangi \"{title}\" nomli she'r muvaffaqiyatli qo'shildi!", reply_markup=main_menu(), parse_mode="Markdown")
+
+    # --- PROFILNI PAROL BILAN O'CHIRISH BOSQICHI ---
+    elif step_data["step"] == "delete_check_password":
+        input_pass = message.text
+        prof_id = step_data["profile_id"]
+        
+        conn = sqlite3.connect("poetry_bot.db")
+        cursor = conn.cursor()
+        # Cascade o'chirish ishlashi uchun yana pragma yoqiladi
+        cursor.execute("PRAGMA foreign_keys = ON;")
+        cursor.execute("SELECT password, author_name FROM profiles WHERE id = ?", (prof_id,))
+        res = cursor.fetchone()
+        
+        if res and res[0] == input_pass:
+            author_name = res[1]
+            # Profilni o'chiramiz (she'rlar avtomatik o'chadi)
+            cursor.execute("DELETE FROM profiles WHERE id = ?", (prof_id,))
+            conn.commit()
+            conn.close()
+            
+            del user_steps[chat_id]
+            bot.send_message(chat_id, f"🗑 *{author_name}* profili va unga tegishli barcha she'rlar butunlay o'chirib tashlandi!", reply_markup=main_menu(), parse_mode="Markdown")
+        else:
+            conn.close()
+            del user_steps[chat_id]
+            bot.send_message(chat_id, "❌ Parol noto'g'ri! Profilni o'chirish rad etildi.", reply_markup=main_menu())
 
 # ---- BOTNI ISHGA TUSHIRISH ----
 if __name__ == "__main__":
