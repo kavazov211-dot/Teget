@@ -5,7 +5,7 @@ from datetime import datetime
 import pytz  # <--- Vaqt zonasini to'g'irlash uchun kutubxona
 
 # Bot tokeningizni shu yerga yozing
-TOKEN = "8067221073:AAGD-R2_4azk8MEdpVTqVUrtHrrgv6P2alM"
+TOKEN = "8590881933:AAEaQU09nxXQ9wVAfNMeuqKL3rccRnWEmLE"
 bot = telebot.TeleBot(TOKEN)
 
 # ---- MA'LUMOTLAR BAZASI BILAN ISHLASH ----
